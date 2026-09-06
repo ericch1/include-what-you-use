@@ -48,6 +48,11 @@ _ACTUAL_SUMMARY_END_RE = re.compile(r'^---$')
 _ACTUAL_REMOVAL_LIST_START_RE = re.compile(r'.* should remove these lines:$')
 _NODIFFS_RE = re.compile(r'^\((.*?) has correct #includes/fwd-decls\)$')
 
+# A --check_also argument in a test's IWYU_ARGS line, e.g.
+# // IWYU_ARGS: -Xiwyu --check_also="tests/cxx/*-d1.h"
+_CHECK_ALSO_ARG_RE = re.compile(r'^--check_also=(.*)$')
+_GLOB_MAGIC_RE = re.compile(r'[*?\[]')
+
 # This is an IWYU_ARGS line that specifies launch arguments for a test in its
 # source file. Example:
 # // IWYU_ARGS: -Xiwyu --mapping_file=... -I .
@@ -546,6 +551,22 @@ def _CompareExpectedAndActualSummaries(expected_summaries, actual_summaries):
   failures = []
   for loc in sorted(set(actual_summaries.keys()) |
                     set(expected_summaries.keys())):
+    if loc not in actual_summaries:
+      if not expected_summaries[loc]:
+        # An empty IWYU_SUMMARY block expects no summary at all, as the driver
+        # tests do: nothing is missing.
+        continue
+
+      # The file spells out an IWYU_SUMMARY, but IWYU never reported on it, so
+      # nothing was checked.  Either it is no longer part of the translation
+      # unit, or it is no longer matched by --check_also.  Diffing against
+      # nothing would say so only obliquely, so say it outright.
+      failures.append('\n')
+      failures.append('No summary reported for %s, which has an IWYU_SUMMARY; '
+                      'IWYU did not check that file.\n' % loc)
+      failures.append('---\n')
+      continue
+
     this_failure = difflib.unified_diff(expected_summaries.get(loc, []),
                                         actual_summaries.get(loc, []))
     try:
@@ -583,6 +604,74 @@ def _GetLaunchArguments(cc_file):
           (cc_file, lineno))
 
   return shlex.split(args)
+
+
+def _HasExpectedSummary(filename):
+  """Returns whether filename spells out a non-empty IWYU_SUMMARY.
+
+  An empty one expects no summary at all, so it says nothing about whether the
+  file should be reported on.
+  """
+  try:
+    return any(_GetExpectedSummaries([filename]).values())
+  except (OSError, UnicodeDecodeError):
+    return False
+
+
+def _GetCheckAlsoFiles(cc_file):
+  """Returns the files a test names outright in --check_also, and that carry an
+  IWYU_SUMMARY.
+
+  IWYU reports on a --check_also file only if the translation unit includes it,
+  so a pattern says nothing about what should be reported: 'tests/cxx/*-d1.h'
+  matches headers belonging to other tests too, and most of them are not in
+  this translation unit.  A file named outright is different -- this test asks
+  for that file specifically -- so an IWYU_SUMMARY in it is an expectation that
+  must not go unchecked if IWYU stops reporting on it.
+  """
+  files = []
+  for arg in _GetLaunchArguments(cc_file):
+    m = _CHECK_ALSO_ARG_RE.match(arg)
+    if not m or _GLOB_MAGIC_RE.search(m.group(1)):
+      continue
+    filename = m.group(1).replace(os.sep, '/')
+    if os.path.isfile(filename) and _HasExpectedSummary(filename):
+      files.append(filename)
+
+  return files
+
+
+def _CollectFilesToCheck(cc_file, cpp_files_to_check, actual_summaries):
+  """Returns the files to read expectations from.
+
+  IWYU summarizes the main file, its associated headers and everything matched
+  by --check_also, so the summary output is the authority on what was checked.
+  The caller's candidates need not cover that set -- they are collected by
+  globbing for the test's stem, which misses e.g. a --check_also target with a
+  different name or extension -- so take their union.
+
+  A file that should have been checked, but wasn't, appears in no summary, so
+  the other direction needs candidates known ahead of the run: the caller's,
+  plus the files the test names outright in --check_also.  What is left of the
+  old assumption is only this: a file that carries an IWYU_SUMMARY, is not
+  reported on, is neither a sibling of the test nor named by its --check_also
+  arguments, goes unnoticed.  A lost expectation can hide there, but no
+  expectation can be invented.
+  """
+  files_to_check = list(cpp_files_to_check)
+  known = set(files_to_check)
+  for filename in _GetCheckAlsoFiles(cc_file) + sorted(actual_summaries):
+    if filename in known:
+      continue
+    # Only files in the test tree can carry expectations.  IWYU also reports on
+    # library headers (--check_also='*' matches those too), and prints paths
+    # that need not resolve from the test runner's working directory.
+    if os.path.isabs(filename) or not os.path.isfile(filename):
+      continue
+    known.add(filename)
+    files_to_check.append(filename)
+
+  return files_to_check
 
 
 def _ParsePrerequisites(cc_file):
@@ -669,6 +758,8 @@ def TestIwyuOnRelativeFile(cc_file, cpp_files_to_check, verbose=False):
     cc_file: The name of the file to test, relative to the current dir.
     cpp_files_to_check: A list of filenames for the files
               to check the diagnostics on, relative to the current dir.
+              Files IWYU reports on are checked whether or not they are
+              listed here; see _CollectFilesToCheck().
     verbose: Whether to display verbose output.
   """
   # Parse and check IWYU_{REQUIRES,UNSUPPORTED}
@@ -704,17 +795,20 @@ def TestIwyuOnRelativeFile(cc_file, cpp_files_to_check, verbose=False):
       _GetExpectedNoLocDiagnosticRegexes(cc_file),
       _GetActualNoLocDiagnostics(output))
 
+  actual_summaries = _GetActualSummaries(output)
+  files_to_check = _CollectFilesToCheck(cc_file, cpp_files_to_check,
+                                        actual_summaries)
+
   # Check IWYU diagnostics
   expected_diagnostics = _GetMatchingLines(
-      _EXPECTED_DIAGNOSTICS_RE, cpp_files_to_check)
+      _EXPECTED_DIAGNOSTICS_RE, files_to_check)
   failures += _CompareExpectedAndActualDiagnostics(
       _GetExpectedDiagnosticRegexes(expected_diagnostics),
       _GetActualDiagnostics(output))
 
   # Also figure out if the end-of-parsing suggestions match up.
   failures += _CompareExpectedAndActualSummaries(
-      _GetExpectedSummaries(cpp_files_to_check),
-      _GetActualSummaries(output))
+      _GetExpectedSummaries(files_to_check), actual_summaries)
 
   if failures:
     raise AssertionError(''.join(failures))
