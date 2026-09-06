@@ -383,4 +383,8 @@ if (Python3_Interpreter_FOUND)
     COMMAND ${Python3_EXECUTABLE} iwyu_tool_test.py
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
   )
+  add_test(NAME iwyu_test_util_test
+    COMMAND ${Python3_EXECUTABLE} iwyu_test_util_test.py
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+  )
 endif()
