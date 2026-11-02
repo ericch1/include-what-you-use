@@ -2148,6 +2148,13 @@ bool IncludePicker::IsPublic(OptionalFileEntryRef file) const {
   return (GetVisibility(include) == kPublic);
 }
 
+bool IncludePicker::HasVisibility(OptionalFileEntryRef file) const {
+  CHECK_(file && "Need existing FileEntry");
+  const string path = GetFilePath(file);
+  const MappedInclude include(ConvertToQuotedInclude(path), path);
+  return GetVisibility(include) != kUnusedVisibility;
+}
+
 // Parses a YAML/JSON file containing mapping directives of various types.
 void IncludePicker::AddMappingsFromFile(const string& filename) {
   vector<string> default_search_path;

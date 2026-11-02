@@ -96,6 +96,22 @@ class IwyuPreprocessorInfo : public clang::PPCallbacks,
   // The client *must* call this from the beginning of HandleTranslationUnit()
   void HandlePreprocessingDone();
 
+  // Some projects put the inline definitions of a header (foo.h) in a
+  // separate implementation file (foo.icc) that foo.h #includes.  IWYU
+  // detects such files: see DetectImplementationFiles() in iwyu.cc.
+
+  // Returns the headers that directly #include 'file', or nullptr if there
+  // are none.  'file' can only be an implementation file of one of them.
+  const set<clang::OptionalFileEntryRef>* ImplementationFileIncluders(
+      clang::OptionalFileEntryRef file) const;
+
+  // Marks 'impl' as an implementation file of 'header': 'impl' is private
+  // to 'header'.  If we report on 'header', 'impl' is reported on too, and
+  // may use what 'header' #includes.  Must be called before
+  // HandlePreprocessingDone().
+  void AddImplementationFile(clang::OptionalFileEntryRef impl,
+                             clang::OptionalFileEntryRef header);
+
   // More direct ways of getting at this information
   clang::OptionalFileEntryRef main_file() const {
     return main_file_;
@@ -225,6 +241,11 @@ class IwyuPreprocessorInfo : public clang::PPCallbacks,
                      clang::SourceRange comment_range) override;
 
  private:
+  // Remembers 'includee' as a possible implementation file of 'includer'.
+  void MaybeAddImplementationFileCandidate(
+      clang::OptionalFileEntryRef includer,
+      clang::OptionalFileEntryRef includee);
+
   // Returns true if includee is considered part of the main
   // compilation unit.  We always generate warnings for violations in
   // files are part of the main compilation unit.
@@ -295,6 +316,17 @@ class IwyuPreprocessorInfo : public clang::PPCallbacks,
   // main_file_ and its associated .h and -inl.h files, if they exist.
   // But users can add to it via the --check_also flag.
   set<clang::OptionalFileEntryRef> files_to_report_iwyu_violations_for_;
+
+  // Maps each file that could be an implementation file to the headers
+  // that directly #include it: see ImplementationFileIncluders().
+  map<clang::OptionalFileEntryRef, set<clang::OptionalFileEntryRef>>
+      implementation_file_candidates_;
+
+  // The files among those that are #included by a header we report on.
+  // If they are detected as implementation files, we report on them too,
+  // but detection only happens after preprocessing: so their macro uses
+  // are recorded anyway.
+  set<clang::OptionalFileEntryRef> files_to_record_macro_uses_for_;
 
   // This maps from the include-name as written in the program
   // (including <>'s or ""'s) to the FileEntry we loaded for that

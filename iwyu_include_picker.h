@@ -193,6 +193,10 @@ class IncludePicker {
 
   bool IsPublic(clang::OptionalFileEntryRef file) const;
 
+  // Returns true if the given file has been given a visibility (public or
+  // private), by a mapping or a pragma.
+  bool HasVisibility(clang::OptionalFileEntryRef file) const;
+
   // Parses a YAML/JSON file containing mapping directives of various types.
   void AddMappingsFromFile(const string& filename);
 

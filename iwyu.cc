@@ -4915,11 +4915,15 @@ class IwyuAstConsumer
 
   // Called once at the end of the compilation.
   void HandleTranslationUnit(ASTContext& context) override {  // NOLINT
+    TranslationUnitDecl* tu_decl = context.getTranslationUnitDecl();
+
+    // This must come before HandlePreprocessingDone, which freezes the
+    // include mappings.
+    DetectImplementationFiles(tu_decl);
+
     // TODO(csilvers): automatically detect preprocessing is done, somehow.
     const_cast<IwyuPreprocessorInfo*>(&preprocessor_info())->
         HandlePreprocessingDone();
-
-    TranslationUnitDecl* tu_decl = context.getTranslationUnitDecl();
 
     // Sema::TUScope is reset after parsing, but Sema::getCurScope still points
     // to the translation unit decl scope. TUScope is required for lookup in
@@ -5011,6 +5015,70 @@ class IwyuAstConsumer
       // template body.
       LateParsedTemplate* lpt = sema.LateParsedTemplateMap[fd].get();
       sema.LateTemplateParser(sema.OpaqueParser, *lpt);
+    }
+  }
+
+  // Some projects put the inline definitions of a header (foo.h) in a
+  // separate file (foo.icc), which foo.h #includes.  Such a file defines
+  // what its includer declares, which an ordinary header can't do: it would
+  // have to #include its includer.  So a file #included by a header is an
+  // implementation file of that header if it defines a function or a
+  // variable declared there, or a class declared in a class there: in
+  // short, if it has an out-of-line definition of something the header
+  // declares.  Other redeclarations don't count: a header may well
+  // forward-declare a class and then #include the header defining it.
+  //
+  // Only declarations at namespace scope are considered: that's where
+  // out-of-line definitions are.  A declaration produced by a macro counts
+  // where the macro is expanded, not where the macro is defined.
+  static bool IsOutOfLineDefinition(const Decl* decl) {
+    if (const auto* tpl_decl = dyn_cast<TemplateDecl>(decl))
+      decl = tpl_decl->getTemplatedDecl();
+    if (decl == nullptr)
+      return false;
+    if (const auto* fn_decl = dyn_cast<FunctionDecl>(decl))
+      return fn_decl->isThisDeclarationADefinition();
+    if (const auto* var_decl = dyn_cast<VarDecl>(decl))
+      return var_decl->isThisDeclarationADefinition() == VarDecl::Definition;
+    if (const auto* tag_decl = dyn_cast<TagDecl>(decl)) {
+      return tag_decl->isThisDeclarationADefinition() &&
+             isa<RecordDecl>(tag_decl->getDeclContext());
+    }
+    return false;
+  }
+
+  void DetectImplementationFiles(const DeclContext* decl_context) {
+    IwyuPreprocessorInfo* preprocessor_info =
+        const_cast<IwyuPreprocessorInfo*>(&this->preprocessor_info());
+    for (const Decl* decl : decl_context->decls()) {
+      if (isa<NamespaceDecl, LinkageSpecDecl, clang::ExportDecl>(decl)) {
+        DetectImplementationFiles(cast<DeclContext>(decl));
+        continue;
+      }
+      if (decl->isImplicit() || decl->getPreviousDecl() == nullptr ||
+          !IsOutOfLineDefinition(decl))
+        continue;
+      OptionalFileEntryRef file =
+          GetFileEntry(GetInstantiationLoc(decl->getLocation()));
+      const set<OptionalFileEntryRef>* includers =
+          preprocessor_info->ImplementationFileIncluders(file);
+      if (includers == nullptr ||
+          ContainsKey(detected_implementation_files_, file))
+        continue;
+      for (const Decl* prev = decl->getPreviousDecl(); prev != nullptr;
+           prev = prev->getPreviousDecl()) {
+        OptionalFileEntryRef header =
+            GetFileEntry(GetInstantiationLoc(prev->getLocation()));
+        if (ContainsKey(*includers, header)) {
+          VERRS(4) << "Detected implementation file " << GetFilePath(file)
+                   << " of " << GetFilePath(header) << ": "
+                   << PrintableLoc(decl->getLocation()) << " defines "
+                   << PrintableLoc(prev->getLocation()) << "\n";
+          preprocessor_info->AddImplementationFile(file, header);
+          detected_implementation_files_.insert(file);
+          break;
+        }
+      }
     }
   }
 
@@ -6109,6 +6177,9 @@ class IwyuAstConsumer
 
   // Class we call to handle instantiated template functions and classes.
   InstantiatedTemplateVisitor instantiated_template_visitor_;
+
+  // The files found by DetectImplementationFiles().
+  set<OptionalFileEntryRef> detected_implementation_files_;
 };  // class IwyuAstConsumer
 
 // IWYU frontend action impl.

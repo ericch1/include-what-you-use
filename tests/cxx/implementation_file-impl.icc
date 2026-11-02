@@ -1,0 +1,48 @@
+//===--- implementation_file-impl.icc - test input file for iwyu ----------===//
+//
+//                     The LLVM Compiler Infrastructure
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.TXT for details.
+//
+//===----------------------------------------------------------------------===//
+
+// Uses IndirectClass without #including indirect.h: implementation_file.h
+// does.  The #include of implementation_file.h is redundant, since that
+// file #includes this one: it is kept, but not required.  The macro from
+// -i1.h is only used here, so the #include of -i1.h belongs here.
+
+#include "tests/cxx/implementation_file-i1.h"
+#include "tests/cxx/implementation_file.h"
+
+inline void ImplFileClass::InlineMethod() {
+  IndirectClass local;
+  local.Method();
+}
+
+template <typename T>
+void ImplFileClass::TemplateMethod(T t) {
+  IndirectClass local;
+  local.a = t;
+}
+
+class ImplFileClass::Nested {
+  IndirectClass nested_member;
+};
+
+inline int ImplFileFunction(int i) {
+  IndirectClass local;
+  return local.a + IMPL_FILE_TWICE(i);
+}
+
+template <typename T>
+T ImplFileTemplate(T t) {
+  IndirectClass local;
+  return local.a + t;
+}
+
+/**** IWYU_SUMMARY
+
+(tests/cxx/implementation_file-impl.icc has correct #includes/fwd-decls)
+
+***** IWYU_SUMMARY */
