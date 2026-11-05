@@ -254,3 +254,62 @@ converted):
 
     #include "foo.h"
     void Func1(const Foo& foo);   // IWYU says you intend to re-export Foo
+
+
+### Automatic re-export: implementation files ###
+
+Some projects keep the inline or template definitions of a header in a separate
+file, which only the header `#include`s:
+
+    component/foo.h:
+      #include "component/bar.h"
+
+      struct Foo {
+        Bar Get();
+      };
+
+      #include "component/foo.icc"
+
+    component/foo.icc:
+      inline Bar Foo::Get() {
+        return Bar();
+      }
+
+IWYU says that `component/foo.h` re-exports what `component/foo.icc` defines,
+when `component/foo.h` `#include`s `component/foo.icc` (directly, or through
+another file that only it `#include`s), no other file does, and
+`component/foo.icc` defines functions or variables that `component/foo.h`
+declares before the `#include`.  Then:
+
+* users of `Foo::Get` are told to `#include "component/foo.h"`, not the
+  implementation file;
+* `component/foo.h` keeps its `#include` of the implementation file;
+* when IWYU reports on both files, for example on `component/foo.h` as the
+  associated header of `component/foo.cc`, with
+  `--check_also=component/foo.icc`, the implementation file may use what
+  `component/foo.h` declares, and the `#include`s that IWYU keeps in
+  `component/foo.h`, without `#include`ing them.
+
+There are limits:
+
+* IWYU only sees what the implementation file uses when it reports on it.
+  Without `--check_also=component/foo.icc`, `component/foo.h` can still be
+  told to remove an `#include` that only the implementation file needs.
+* It is decided for each translation unit.  If another file `#include`s the
+  implementation file too, for example a user who followed earlier advice of
+  IWYU, it is an ordinary header in that translation unit: that user is not
+  told to `#include` the header, and the header may be told to remove its
+  `#include` of the implementation file.
+* Conversely, an ordinary header that defines a function declared by the only
+  file that `#include`s it, in that translation unit, is treated like an
+  implementation file.
+* Only functions and variables declared in the header count.  Explicit
+  specializations, and files `#include`d inside a class body to define
+  members, are not recognized: users of an explicit specialization are still
+  told to `#include` the implementation file, which leads to the second case.
+
+To override IWYU's decision, give the implementation file a mapping or a
+pragma: `// IWYU pragma: private, include "component/foo.h"` says where its
+definitions come from, in every translation unit.  In the third case, an
+`#include` of the ordinary header from another file, with
+`IWYU pragma: keep` if needed, makes IWYU treat it as usual.

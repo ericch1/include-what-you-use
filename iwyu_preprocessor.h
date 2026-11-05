@@ -146,6 +146,11 @@ class IwyuPreprocessorInfo : public clang::PPCallbacks,
   // the second.
   bool FileTransitivelyIncludes(clang::OptionalFileEntryRef includer,
                                 clang::OptionalFileEntryRef includee) const;
+
+  // Returns the file that directly #includes 'file', if exactly one file
+  // does.
+  clang::OptionalFileEntryRef SoleIncluder(
+      clang::OptionalFileEntryRef file) const;
   bool FileTransitivelyIncludes(clang::OptionalFileEntryRef includer,
                                 const string& quoted_includee) const;
   // This seems like a weird way to call this function, but we

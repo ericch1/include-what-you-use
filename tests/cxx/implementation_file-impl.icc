@@ -1,0 +1,21 @@
+//===--- implementation_file-impl.icc - test input file for iwyu ----------===//
+//
+//                     The LLVM Compiler Infrastructure
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.TXT for details.
+//
+//===----------------------------------------------------------------------===//
+
+// Defines nothing itself: it #includes the file that does.  The #include
+// of implementation_file.h is redundant, since that file #includes this
+// one: it is kept, but not required.
+
+#include "implementation_file.h"
+#include "tests/cxx/implementation_file-detail.icc"
+
+/**** IWYU_SUMMARY
+
+(tests/cxx/implementation_file-impl.icc has correct #includes/fwd-decls)
+
+***** IWYU_SUMMARY */

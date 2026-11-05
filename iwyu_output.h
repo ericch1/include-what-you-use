@@ -272,7 +272,15 @@ class IwyuFileInfo {
   // associated headers.  Examples: vector has bits/stl_vector.h as an
   // associated header; foo.cc has foo.h and foo-inl.h as associated
   // headers.
-  void AddAssociatedHeader(const IwyuFileInfo* other);
+  //
+  // By default, this file is also required to #include 'other' (iwyu
+  // suggests adding it if it's missing).  Pass require_include=false for
+  // the case where 'other' is an associated provider of #includes without
+  // this file having to #include it: an implementation file (foo.icc)
+  // and its header (foo.h), which already #includes foo.icc.  An #include
+  // that is there anyway is kept.
+  void AddAssociatedHeader(const IwyuFileInfo* other,
+                           bool require_include = true);
 
   // Use these to register an iwyu declaration: either an #include,
   // a forward-declaration or a using-declaration.
@@ -418,6 +426,10 @@ class IwyuFileInfo {
   // this file is foo.cc, associated_headers_ are the IwyuFileInfo's for
   // foo.h and foo-inl.h, if present.
   set<const IwyuFileInfo*> associated_headers_;
+
+  // The subset of associated_headers_ that this file needn't #include:
+  // see AddAssociatedHeader().
+  set<const IwyuFileInfo*> associated_headers_not_requiring_include_;
 
   // Holds all the uses that are reported.
   vector<OneUse> symbol_uses_;

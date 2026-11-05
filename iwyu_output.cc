@@ -641,10 +641,13 @@ IwyuFileInfo::IwyuFileInfo(OptionalFileEntryRef this_file,
       desired_includes_have_been_calculated_(false) {
 }
 
-void IwyuFileInfo::AddAssociatedHeader(const IwyuFileInfo* other) {
+void IwyuFileInfo::AddAssociatedHeader(const IwyuFileInfo* other,
+                                       bool require_include) {
   VERRS(6) << "Adding " << GetFilePath(other->file_)
            << " as associated header for " << GetFilePath(file_) << "\n";
   associated_headers_.insert(other);
+  if (!require_include)
+    associated_headers_not_requiring_include_.insert(other);
 }
 
 void IwyuFileInfo::AddInclude(OptionalFileEntryRef includee,
@@ -1137,6 +1140,10 @@ set<string> CalculateMinimalIncludes(
 //     that comes before the use.  (This is for cases like typedefs
 //     where iwyu demands a full use but the language allows a
 //     forward-declare.)
+// B2a) If the decl is a definition in an implementation file -- a file
+//     #included by its header only, which declares what it defines --
+//     re-point the use to the declaration in the header, unless a mapping
+//     or a pragma maps the implementation file elsewhere.
 // B3) Discard symbol uses of a symbol defined in the same file it's used.
 //     If the symbol is a typedef, function, or var -- every decl
 //     that is re-declarable except for TagDecl -- discard if *any*
@@ -1163,6 +1170,12 @@ set<string> CalculateMinimalIncludes(
 // B3') Discard macro uses from a 'new' #include (B7 redux).
 
 // Determining 'desired' #includes:
+// C0) Keep the #includes of this file's implementation files.
+//
+// An implementation file also gets its header as an associated header, so
+// that it inherits its #includes in C1 and C2: see ResolvePendingAnalysis().
+// Like B2a and C0, this relies on the implementation files computed once for
+// the translation unit: see ImplementationFileHeaders().
 // C1) Get a list of 'effective' direct includes.  For most files, it's
 //     the same as the actual direct includes, but for the main .cc
 //     file it also gets 'free' includes from its associated .h files.
@@ -1373,6 +1386,143 @@ static bool HasMapping(const NamedDecl* decl) {
   return !picker.GetCandidateHeadersForSymbol(without_fn_args).empty();
 }
 
+// Returns true if decl is the definition of a function or a variable.
+static bool IsFunctionOrVariableDefinition(const Decl* decl) {
+  if (const auto* tpl_decl = dyn_cast<TemplateDecl>(decl))
+    decl = tpl_decl->getTemplatedDecl();
+  const auto* fn_decl = llvm::dyn_cast_or_null<FunctionDecl>(decl);
+  const auto* var_decl = llvm::dyn_cast_or_null<clang::VarDecl>(decl);
+  if (fn_decl)
+    return fn_decl->isThisDeclarationADefinition();
+  return var_decl &&
+         var_decl->isThisDeclarationADefinition() == clang::VarDecl::Definition;
+}
+
+// Returns the first declaration of decl that comes before it and is not a
+// friend declaration, in a file for which in_header returns true, or
+// nullptr.  That's a declaration a header can rely on for a definition it
+// #includes.
+template <typename Predicate>
+static const NamedDecl* FindPriorDeclaration(const NamedDecl* decl,
+                                             Predicate in_header) {
+  const Decl* first = nullptr;
+  for (const Decl* redecl : decl->redecls()) {
+    if (redecl != decl && redecl->getFriendObjectKind() == Decl::FOK_None &&
+        IsBeforeInTranslationUnit(redecl, decl) &&
+        (first == nullptr || IsBeforeInTranslationUnit(redecl, first)) &&
+        in_header(GetFileEntry(redecl)))
+      first = redecl;
+  }
+  return first ? cast<NamedDecl>(first) : nullptr;
+}
+
+// Maps each file to the files with a declaration that a definition in the
+// file completes, as FindPriorDeclaration() sees it.  Only definitions at
+// namespace scope are considered.
+static void CollectCompletedDeclarations(
+    const DeclContext* decl_context,
+    map<OptionalFileEntryRef, set<OptionalFileEntryRef>>* completed) {
+  for (const Decl* decl : decl_context->decls()) {
+    if (isa<NamespaceDecl, clang::LinkageSpecDecl, clang::ExportDecl>(decl)) {
+      CollectCompletedDeclarations(cast<DeclContext>(decl), completed);
+      continue;
+    }
+    const auto* named_decl = dyn_cast<NamedDecl>(decl);
+    if (named_decl == nullptr || !IsFunctionOrVariableDefinition(named_decl))
+      continue;
+    OptionalFileEntryRef file =
+        GetFileEntry(GetInstantiationLoc(decl->getLocation()));
+    FindPriorDeclaration(named_decl, [&](OptionalFileEntryRef header) {
+      if (header != file)
+        (*completed)[file].insert(header);
+      return false;  // Look at every prior declaration.
+    });
+  }
+}
+
+// Maps each implementation file of the translation unit to its header.
+//
+// A file is an implementation file of a header if the header #includes it
+// and no other file does, and if it defines functions or variables that the
+// header declares before the #include.  The files between them, each
+// #included by the next one only, are implementation files of the header
+// too, even if they define nothing themselves (foo.h -> foo_all.icc ->
+// foo_a.icc).  When several headers qualify, the outermost one wins.
+//
+// This is computed once, from the #include structure and the definitions
+// at namespace scope, so that every rule sees the same files.  A process
+// handles one translation unit, so the result is kept in a static.
+static const map<OptionalFileEntryRef, OptionalFileEntryRef>&
+ImplementationFileHeaders(const IwyuPreprocessorInfo* preprocessor_info) {
+  static map<OptionalFileEntryRef, OptionalFileEntryRef>* headers = nullptr;
+  if (headers != nullptr)
+    return *headers;
+  headers = new map<OptionalFileEntryRef, OptionalFileEntryRef>;
+  map<OptionalFileEntryRef, set<OptionalFileEntryRef>> completed;
+  CollectCompletedDeclarations(GlobalASTContext().getTranslationUnitDecl(),
+                               &completed);
+  for (const auto& [file, declaring_files] : completed) {
+    // Walk up the files that each #include the previous one, and no other
+    // file does, and find the outermost one that file completes.
+    vector<OptionalFileEntryRef> chain = {file};
+    size_t header_index = 0;
+    set<OptionalFileEntryRef> seen = {file};
+    for (OptionalFileEntryRef includer = preprocessor_info->SoleIncluder(file);
+         includer && includer != preprocessor_info->main_file() &&
+         seen.insert(includer).second;
+         includer = preprocessor_info->SoleIncluder(includer)) {
+      chain.push_back(includer);
+      if (ContainsKey(declaring_files, includer))
+        header_index = chain.size() - 1;
+    }
+    if (header_index == 0)
+      continue;
+    const OptionalFileEntryRef header = chain[header_index];
+    for (size_t i = 0; i < header_index; ++i) {
+      OptionalFileEntryRef& known_header = (*headers)[chain[i]];
+      if (!known_header ||
+          preprocessor_info->FileTransitivelyIncludes(header, known_header))
+        known_header = header;
+    }
+  }
+  for (const auto& [impl, header] : *headers) {
+    VERRS(4) << GetFilePath(impl) << " is an implementation file of "
+             << GetFilePath(header) << "\n";
+  }
+  return *headers;
+}
+
+// Returns the header 'file' is an implementation file of, if any.
+static OptionalFileEntryRef ImplementedHeader(
+    OptionalFileEntryRef file, const IwyuPreprocessorInfo* preprocessor_info) {
+  return GetOrDefault(ImplementationFileHeaders(preprocessor_info), file,
+                      OptionalFileEntryRef());
+}
+
+// If decl defines a function or a variable in an implementation file,
+// returns its declaration in the header, else nullptr.  A mapping or a
+// pragma that maps the implementation file to another header wins.
+static const NamedDecl* GetDeclarationInImplementedHeader(
+    const NamedDecl* decl, const IwyuPreprocessorInfo* preprocessor_info) {
+  if (!IsFunctionOrVariableDefinition(decl))
+    return nullptr;
+  OptionalFileEntryRef file = GetFileEntry(decl);
+  const OptionalFileEntryRef header =
+      ImplementedHeader(file, preprocessor_info);
+  if (!header)
+    return nullptr;
+  // Without a mapping, the only candidate header for the file is the file
+  // itself.
+  const string path = GetFilePath(file);
+  for (const MappedInclude& mapped :
+       GlobalIncludePicker().GetCandidateHeadersForFilepath(path)) {
+    if (mapped.path != path)
+      return nullptr;
+  }
+  return FindPriorDeclaration(
+      decl, [&](OptionalFileEntryRef in) { return in == header; });
+}
+
 void ProcessFullUse(OneUse* use, const IwyuPreprocessorInfo* preprocessor_info,
                     const vector<OneUse>& all_uses) {
   CHECK_(use->decl() && "Must call ProcessFullUse on a decl");
@@ -1429,6 +1579,19 @@ void ProcessFullUse(OneUse* use, const IwyuPreprocessorInfo* preprocessor_info,
              << " (" << use->PrintableUseLoc() << ")\n";
     use->set_forward_declare_use();
     return;
+  }
+
+  // (B2a) If the decl is a function or variable defined in an implementation
+  // file, re-point to its declaration in the header.  Some projects keep
+  // the inline or template definitions of foo.h in foo.icc, which foo.h
+  // #includes: users of those definitions should #include foo.h.
+  if (const NamedDecl* header_decl =
+          GetDeclarationInImplementedHeader(use->decl(), preprocessor_info)) {
+    VERRS(6) << "Re-pointing use of " << use->symbol_name() << " ("
+             << use->PrintableUseLoc() << ") to its declaration in "
+             << GetFilePath(header_decl) << ": definition in implementation"
+             << " file " << GetFilePath(use->decl()) << "\n";
+    use->reset_decl(header_decl);
   }
 
   // (B3) Discard symbol uses of a symbol defined in the same file it's used.
@@ -1861,10 +2024,30 @@ void IwyuFileInfo::CalculateIwyuViolations(vector<OneUse>* uses) {
       internal::ProcessSymbolUse(&use, preprocessor_info_);
   }
 
+  // (C0) A header keeps its #includes of its implementation files.  So does
+  // an implementation file, for those it #includes in turn: only this file
+  // #includes them.
+  for (OptionalFileEntryRef include : direct_includes_as_fileentries()) {
+    if (internal::ImplementedHeader(include, preprocessor_info_)) {
+      VERRS(6) << GetFilePath(file_) << " keeps its #include of "
+               << GetFilePath(include) << ": implementation file\n";
+      ReportIncludeFileUse(include, QuotedIncludeAsWritten(include));
+    }
+  }
+
   // (C1) Compute the direct includes of 'associated' files.
   set<string> associated_direct_includes;
   for (const IwyuFileInfo* associated : associated_headers_) {
-    ReportIncludeFileUse(associated->file_, associated->quoted_file_);
+    // Reporting the use of an associated header keeps its #include, and
+    // asks for it when it's missing.  An implementation file needn't
+    // #include its header, but may: keep the #include if it's there.
+    if (!ContainsKey(associated_headers_not_requiring_include_, associated)) {
+      ReportIncludeFileUse(associated->file_, associated->quoted_file_);
+    } else if (ContainsKey(direct_includes_as_fileentries(),
+                           associated->file_)) {
+      ReportIncludeFileUse(associated->file_,
+                           QuotedIncludeAsWritten(associated->file_));
+    }
     InsertAllInto(associated->direct_includes(), &associated_direct_includes);
   }
   // The 'effective' direct includes are defined to be the current
@@ -2418,6 +2601,24 @@ void IwyuFileInfo::HandlePreprocessingDone() {
 }
 
 void IwyuFileInfo::ResolvePendingAnalysis() {
+  // An implementation file inherits from its header, and from the
+  // implementation files between them, like a .cc file from its .h file:
+  // they are its associated headers.  Only those reported on count, since
+  // their desired #includes are what this file may rely on; they are
+  // calculated first (see iwyu.cc).
+  if (internal::ImplementedHeader(file_, preprocessor_info_)) {
+    const set<OptionalFileEntryRef>* reported =
+        preprocessor_info_->files_to_report_iwyu_violations_for();
+    OptionalFileEntryRef includer = file_;
+    do {
+      includer = preprocessor_info_->SoleIncluder(includer);
+      if (ContainsKey(*reported, includer)) {
+        AddAssociatedHeader(preprocessor_info_->FileInfoFor(includer),
+                            /*require_include=*/false);
+      }
+    } while (internal::ImplementedHeader(includer, preprocessor_info_));
+  }
+
   // Resolve using declarations:  This handles the case where there's a using
   // declaration in the file but no code is actually using it. If that
   // happens, we might try to remove all of the headers with the decls that

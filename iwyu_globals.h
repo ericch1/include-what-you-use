@@ -18,6 +18,7 @@
 #include "clang/Basic/FileEntry.h"
 
 namespace clang {
+class ASTContext;
 class CompilerInstance;
 class SourceManager;
 struct PrintingPolicy;
@@ -120,6 +121,9 @@ const CommandlineFlags& GlobalFlags();
 CommandlineFlags* MutableGlobalFlagsForTesting();
 
 clang::SourceManager* GlobalSourceManager();
+
+// The AST of the translation unit, once it is parsed.
+clang::ASTContext& GlobalASTContext();
 
 const IncludePicker& GlobalIncludePicker();
 IncludePicker* MutableGlobalIncludePicker();   // only use at great need!
