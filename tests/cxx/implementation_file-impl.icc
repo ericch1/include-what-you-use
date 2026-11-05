@@ -1,0 +1,57 @@
+//===--- implementation_file-impl.icc - test input file for iwyu ----------===//
+//
+//                     The LLVM Compiler Infrastructure
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.TXT for details.
+//
+//===----------------------------------------------------------------------===//
+
+// Uses IndirectClass without #including indirect.h.  The #include of
+// implementation_file.h is redundant, since that file #includes this one:
+// it is kept, but not required.
+
+#include "implementation_file.h"
+
+inline void ImplFileClass::InlineMethod() {
+  IndirectClass local;
+  local.Method();
+}
+
+// A forward-declare use of ImplFileClass, satisfied by the header.
+inline bool ImplFileClass::Equals(const ImplFileClass& other) const {
+  return this == &other;
+}
+
+template <typename T>
+void ImplFileClass::TemplateMethod(T t) {
+  IndirectClass local;
+  local.a = t;
+}
+
+inline int ImplFileFunction(int i) {
+  IndirectClass local;
+  return local.a + IMPL_FILE_TWICE(i);
+}
+
+template <typename T>
+T ImplFileTemplate(T t) {
+  IndirectClass local;
+  return local.a + t;
+}
+
+#include "tests/cxx/implementation_file-detail.icc"
+
+/**** IWYU_SUMMARY
+
+tests/cxx/implementation_file-impl.icc should add these lines:
+#include "tests/cxx/implementation_file-i1.h"
+
+tests/cxx/implementation_file-impl.icc should remove these lines:
+
+The full include-list for tests/cxx/implementation_file-impl.icc:
+#include "implementation_file.h"
+#include "tests/cxx/implementation_file-detail.icc"
+#include "tests/cxx/implementation_file-i1.h"  // for IMPL_FILE_TWICE
+
+***** IWYU_SUMMARY */

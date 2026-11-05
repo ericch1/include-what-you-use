@@ -60,6 +60,7 @@ namespace include_what_you_use {
 
 static CommandlineFlags* commandline_flags = nullptr;
 static SourceManager* source_manager = nullptr;
+static CompilerInstance* compiler_instance = nullptr;
 static IncludePicker* include_picker = nullptr;
 static const LangOptions default_lang_options;
 static const PrintingPolicy default_print_policy(default_lang_options);
@@ -491,6 +492,7 @@ static CXXStdLib DeriveCXXStdLib(const CompilerInstance& compiler,
 
 void InitGlobals(CompilerInstance& compiler, const ToolChain& toolchain) {
   source_manager = &compiler.getSourceManager();
+  compiler_instance = &compiler;
   data_getter = new SourceManagerCharacterDataGetter(*source_manager);
   vector<HeaderSearchPath> search_paths = ComputeHeaderSearchPaths(
       &compiler.getPreprocessor().getHeaderSearchInfo());
@@ -530,6 +532,12 @@ CommandlineFlags* MutableGlobalFlagsForTesting() {
 SourceManager* GlobalSourceManager() {
   CHECK_(source_manager && "Must call InitGlobals() before calling this");
   return source_manager;
+}
+
+clang::ASTContext& GlobalASTContext() {
+  CHECK_(compiler_instance && compiler_instance->hasASTContext() &&
+         "Must parse the translation unit before calling this");
+  return compiler_instance->getASTContext();
 }
 
 const IncludePicker& GlobalIncludePicker() {

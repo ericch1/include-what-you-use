@@ -1142,6 +1142,19 @@ bool IwyuPreprocessorInfo::PublicHeaderIntendsToProvide(
   return false;
 }
 
+OptionalFileEntryRef IwyuPreprocessorInfo::SoleIncluder(
+    OptionalFileEntryRef file) const {
+  OptionalFileEntryRef includer;
+  for (const auto& [other, file_info] : iwyu_file_info_map_) {
+    if (!ContainsKey(file_info.direct_includes_as_fileentries(), file))
+      continue;
+    if (includer)
+      return std::nullopt;
+    includer = other;
+  }
+  return includer;
+}
+
 bool IwyuPreprocessorInfo::FileTransitivelyIncludes(
     OptionalFileEntryRef includer, OptionalFileEntryRef includee) const {
   if (const set<OptionalFileEntryRef>* all_includes =

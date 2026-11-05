@@ -1,0 +1,23 @@
+//===--- implementation_file-d2-b.icc - test input file for iwyu ----------===//
+//
+//                     The LLVM Compiler Infrastructure
+//
+// This file is distributed under the University of Illinois Open Source
+// License. See LICENSE.TXT for details.
+//
+//===----------------------------------------------------------------------===//
+
+namespace impl_file {
+
+inline int D2Class::B() const {
+  IndirectClass local;
+  return local.a;
+}
+
+}  // namespace impl_file
+
+/**** IWYU_SUMMARY
+
+(tests/cxx/implementation_file-d2-b.icc has correct #includes/fwd-decls)
+
+***** IWYU_SUMMARY */

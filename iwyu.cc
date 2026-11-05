@@ -4966,7 +4966,8 @@ class IwyuAstConsumer
     // We have to calculate the .h files before the .cc file, since
     // the .cc file inherits #includes from the .h files, and we
     // need to figure out what those #includes are going to be.  Likewise,
-    // a header inherits from its own associated headers.
+    // a header inherits from its own associated headers, and an
+    // implementation file from its header.
     size_t num_edits = 0;
     OptionalFileEntryRef const main_file = preprocessor_info().main_file();
     set<OptionalFileEntryRef> calculated_files;
@@ -4981,6 +4982,9 @@ class IwyuAstConsumer
             if (ContainsKey(*files_to_report_iwyu_violations_for, associated))
               calculate(associated);
           }
+          for (OptionalFileEntryRef header :
+               file_info->ImplementedHeaderFiles())
+            calculate(header);
           num_edits += file_info->CalculateAndReportIwyuViolations();
         };
     for (OptionalFileEntryRef file : *files_to_report_iwyu_violations_for)

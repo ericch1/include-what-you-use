@@ -367,6 +367,11 @@ class IwyuFileInfo {
     return associated_file_entries;
   }
 
+  // Returns the files reported on that this file inherits from as an
+  // implementation file: its header, and the implementation files between
+  // them.  They must be calculated before this file.
+  set<clang::OptionalFileEntryRef> ImplementedHeaderFiles() const;
+
   // Returns how this file #includes 'includee', such as "foo.h" or
   // <foo.h>, or an empty string if it doesn't #include it directly.
   string QuotedIncludeAsWritten(clang::OptionalFileEntryRef includee) const;
@@ -384,6 +389,10 @@ class IwyuFileInfo {
       associated_quoted_includes.insert(associated->quoted_file_);
     return associated_quoted_includes;
   }
+
+  // The desired #includes of the headers this file is an implementation
+  // file of.
+  set<string> ImplementedHeadersIncludes() const;
 
   set<string> AssociatedDesiredIncludes() const {
     set<string> associated_desired_includes;
@@ -418,6 +427,11 @@ class IwyuFileInfo {
   // this file is foo.cc, associated_headers_ are the IwyuFileInfo's for
   // foo.h and foo-inl.h, if present.
   set<const IwyuFileInfo*> associated_headers_;
+
+  // The headers this file is an implementation file of: they #include this
+  // file, and this file uses what they declare.  They are treated much like
+  // associated headers, but this file needn't #include them.
+  set<const IwyuFileInfo*> implemented_headers_;
 
   // Holds all the uses that are reported.
   vector<OneUse> symbol_uses_;
